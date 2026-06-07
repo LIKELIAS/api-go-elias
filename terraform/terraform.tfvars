@@ -13,5 +13,5 @@ lambda_timeout_seconds = 30
 
 # Estas dos se sobreescriben con TF_VAR_database_url y TF_VAR_jwt_secret
 # en GitHub Actions. Dejar vacías o con placeholder aquí.
-database_url = "placeholder-set-via-github-secret"
-jwt_secret   = "placeholder-set-via-github-secret"
+database_url = ""
+jwt_secret   = ""
