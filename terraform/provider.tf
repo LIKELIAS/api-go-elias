@@ -16,12 +16,11 @@ terraform {
     }
   }
 
-  # Backend en S3 (opcional, descomenta cuando tengas el bucket)
-  # backend "s3" {
-  #   bucket = "mi-terraform-state-bucket"
-  #   key    = "api-go/terraform.tfstate"
-  #   region = "us-east-1"
-  # }
+  backend "s3" {
+    bucket = "api-go-elias-terraform-state"
+    key    = "api-go/terraform.tfstate"
+    region = "us-east-2"
+  }
 }
 
 provider "aws" {
