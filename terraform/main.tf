@@ -99,6 +99,15 @@ resource "aws_apigatewayv2_stage" "default_stage" {
 
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.api_logs.arn
+    format = jsonencode({
+      requestId      = "$context.requestId"
+      ip             = "$context.identity.sourceIp"
+      requestTime    = "$context.requestTime"
+      httpMethod     = "$context.httpMethod"
+      routeKey       = "$context.routeKey"
+      status         = "$context.status"
+      responseLength = "$context.responseLength"
+    })
   }
 }
 
@@ -153,6 +162,3 @@ resource "aws_iam_role_policy" "lambda_s3_policy" {
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_s3.json
 }
-
-# Pasar el nombre del bucket como variable de entorno al Lambda
-# (añadir S3_BUCKET al bloque environment de aws_lambda_function si se usa)
