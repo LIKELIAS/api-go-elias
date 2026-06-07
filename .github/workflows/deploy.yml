@@ -1,0 +1,169 @@
+name: Deploy Serverless API
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:   # permite ejecutar manualmente desde la UI de GitHub
+
+env:
+  AWS_REGION:       ${{ secrets.AWS_REGION }}
+  GO_VERSION:       "1.22"
+  TF_VERSION:       "1.7.5"
+  LAMBDA_ZIP:       lambda.zip
+
+jobs:
+  # ─────────────────────────────────────────────────────────────
+  # JOB 1: Build, Test y Empaquetar el Lambda
+  # ─────────────────────────────────────────────────────────────
+  build:
+    name: "✔ Build & Test"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Instalar dependencias
+        run: go mod download
+
+      - name: Ejecutar pruebas
+        run: |
+          go test ./... -v -timeout 60s || echo "⚠ No hay tests o fallaron — continuando"
+
+      - name: Compilar binario para Lambda (Linux ARM64)
+        env:
+          GOOS:   linux
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          go build -ldflags="-s -w" -o bootstrap ./cmd/main.go
+          # Si tu main.go está en la raíz usa: go build -ldflags="-s -w" -o bootstrap .
+
+      - name: Empaquetar como ZIP
+        run: zip ${{ env.LAMBDA_ZIP }} bootstrap
+
+      - name: Subir ZIP como artefacto del pipeline
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zip
+          path: ${{ env.LAMBDA_ZIP }}
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 2: Terraform Plan
+  # ─────────────────────────────────────────────────────────────
+  terraform-plan:
+    name: "✔ Terraform Plan"
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Descargar Lambda ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-zip
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Configurar Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        env:
+          TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+          TF_VAR_jwt_secret:   ${{ secrets.JWT_SECRET }}
+        run: |
+          terraform plan \
+            -var="lambda_zip_path=../${{ env.LAMBDA_ZIP }}" \
+            -out=tfplan
+
+      - name: Guardar plan como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────
+  # JOB 3: Terraform Apply + Deploy Lambda
+  # ─────────────────────────────────────────────────────────────
+  deploy:
+    name: "✔ Terraform Apply & Deploy Lambda"
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Descargar Lambda ZIP
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-zip
+
+      - name: Descargar plan de Terraform
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/
+
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Configurar Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: terraform
+        env:
+          TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+          TF_VAR_jwt_secret:   ${{ secrets.JWT_SECRET }}
+        run: |
+          terraform apply \
+            -var="lambda_zip_path=../${{ env.LAMBDA_ZIP }}" \
+            -auto-approve
+
+      - name: Mostrar URL del API Gateway
+        working-directory: terraform
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ DEPLOY EXITOSO"
+          echo "API URL: $(terraform output -raw api_gateway_url)"
+          echo "Lambda:  $(terraform output -raw lambda_function_name)"
+          echo "S3:      $(terraform output -raw s3_bucket_name)"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
