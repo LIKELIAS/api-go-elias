@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+	ginadapter "github.com/awslabs/aws-lambda-go-api-proxy/gin"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
@@ -14,40 +18,40 @@ import (
 	"github.com/elias/api-go-elias/internal/infrastructure/repository"
 )
 
-func main() {
-	// Cargar variables de entorno
-	if err := godotenv.Load(); err != nil {
-		log.Println("Advertencia: no se encontró archivo .env, usando variables del sistema")
-	}
+var ginLambda *ginadapter.GinLambdaV2
 
+func setupRouter() *gin.Engine {
 	// --- Infraestructura: conexión a base de datos ---
 	database, err := db.NewPostgresDB()
 	if err != nil {
 		log.Fatalf("Error al conectar con PostgreSQL: %v", err)
 	}
-	defer database.Close()
 	log.Println("Conexión a PostgreSQL establecida correctamente")
 
 	// --- Inyección de dependencias (Arquitectura Hexagonal) ---
-	// 1. Repositorio (adaptador de salida)
 	userRepo := repository.NewPostgresUserRepository(database)
-
-	// 2. Servicio de aplicación (lógica de negocio)
 	userSvc := application.NewUserService(userRepo)
+	userHandler := handler.NewUserHandler(userSvc)
+
 	estudianteRepo := repository.NewPostgresEstudianteRepository(database)
 	estudianteSvc := application.NewEstudianteService(estudianteRepo)
 	estudianteHandler := handler.NewEstudianteHandler(estudianteSvc)
 
-	// Archivo
 	archivoRepo := repository.NewPostgresArchivoRepository(database)
 	archivoSvc := application.NewArchivoService(archivoRepo)
 	archivoHandler := handler.NewArchivoHandler(archivoSvc)
 
-	// 3. Handler HTTP (adaptador de entrada)
-	userHandler := handler.NewUserHandler(userSvc)
-
 	// --- Router ---
-	r := gin.Default()
+	r := gin.New()
+	r.Use(gin.Recovery())
+
+	// Health check (útil para verificar el deploy en AWS)
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"status":  "ok",
+			"service": "api-go-elias",
+		})
+	})
 
 	// Rutas públicas (sin autenticación)
 	auth := r.Group("/auth")
@@ -89,14 +93,37 @@ func main() {
 		upload.POST("", archivoHandler.Subir)
 	}
 
-	// Iniciar servidor
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	return r
+}
+
+func handler_lambda(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+	return ginLambda.ProxyWithContext(ctx, req)
+}
+
+func main() {
+	// Cargar variables de entorno (solo aplica en modo local)
+	if err := godotenv.Load(); err != nil {
+		log.Println("Advertencia: no se encontró archivo .env, usando variables del sistema")
 	}
 
-	log.Printf("Servidor iniciado en http://localhost:%s", port)
-	if err := r.Run(":" + port); err != nil {
-		log.Fatalf("Error al iniciar el servidor: %v", err)
+	r := setupRouter()
+
+	// Si corre en Lambda, LAMBDA_TASK_ROOT viene definido por AWS
+	if os.Getenv("LAMBDA_TASK_ROOT") != "" {
+		// Modo Lambda
+		log.Println("Iniciando en modo AWS Lambda")
+		gin.SetMode(gin.ReleaseMode)
+		ginLambda = ginadapter.NewV2(r)
+		lambda.Start(handler_lambda)
+	} else {
+		// Modo local (docker, go run, etc.)
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+		log.Printf("Servidor iniciado en http://localhost:%s", port)
+		if err := r.Run(":" + port); err != nil {
+			log.Fatalf("Error al iniciar el servidor: %v", err)
+		}
 	}
 }

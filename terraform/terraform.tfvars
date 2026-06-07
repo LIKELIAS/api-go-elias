@@ -4,7 +4,7 @@
 # GitHub Actions Secrets como variables de entorno TF_VAR_*.
 # ─────────────────────────────────────────────────────────────────────────────
 
-aws_region   = "us-east-1"
+aws_region   = "us-east-2"
 project_name = "api-go-elias"
 environment  = "production"
 
