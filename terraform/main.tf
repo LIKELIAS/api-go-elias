@@ -54,6 +54,7 @@ resource "aws_lambda_function" "api" {
       JWT_SECRET   = var.jwt_secret
       GIN_MODE     = "release"
       PORT         = "8080"
+      S3_BUCKET    = aws_s3_bucket.uploads.bucket
     }
   }
 
